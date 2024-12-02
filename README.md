@@ -1,4 +1,4 @@
-이 프로그램은 https://github.com/dlcjsdltlq/dcinside-cleaner 를 참고하여 제작하였습니다
+이 프로그램은 https://github.com/dlcjsdltlq/dcinside-cleaner 를 참고 및 포크하여 제작하였습니다
 
 사용방법
 로그인후 게시글 또는 댓글 버튼을 선택한후 
