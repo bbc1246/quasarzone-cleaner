@@ -145,7 +145,7 @@
     <item>
      <widget class="QGroupBox" name="group_box_gall">
       <property name="title">
-       <string>갤러리 선택</string>
+       <string>게시판 선택</string>
       </property>
       <layout class="QVBoxLayout" name="verticalLayout_4">
        <item>
