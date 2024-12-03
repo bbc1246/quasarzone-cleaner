@@ -110,21 +110,6 @@ class Cleaner:
         return self.session.cookies.get_dict()
 
 
-    def login(self, user_id: str, user_pw: str) -> bool:
-        self.user_id = user_id.lower()
-        self.session.headers.update(self.login_headers)
-        res = self.session.get('https://www.dcinside.com/')
-        soup = BeautifulSoup(res.text, 'html.parser')
-        input_elements = soup.select('#login_process > input')
-        login_data = self.serializeForm(input_elements)
-        login_data['user_id'] = user_id
-        login_data['pw'] = user_pw
-        self.session.post(
-            'https://sign.dcinside.com/login/member_check', data=login_data)
-        res = self.session.get('https://www.dcinside.com/')
-        if not BeautifulSoup(res.text, 'html.parser').select('.logout'):
-            return False
-        return True
 
     def getUserInfo(self,cookies) -> dict:
         self.session.headers.update(self.login_headers)
@@ -157,29 +142,6 @@ class Cleaner:
             'comment_num': comment_num,
         }
 
-
-    @_handleProxyError
-    def getPageCount(self, gno: str, post_type: str) -> int:
-        gallog_url = f'https://gallog.dcinside.com/{self.user_id}/{post_type}/index?{ "cno=" + str(gno) + "&" if gno else "" }p=%s'
-        self.session.headers.update({'User-Agent': self.user_agent})
-
-        res = self.session.get(gallog_url % 1, proxies=self.getProxy())
-        soup = BeautifulSoup(res.text, 'html.parser')
-        pages = 1
-        paging_elements = soup.select('.bottom_paging_box > a')
-
-        try:
-            if paging_elements:
-                if paging_elements[-1].text == '끝':
-                    pages = paging_elements[-1]['href'].split('&p=')[-1]
-                else:
-                    pages = int(paging_elements[-1].text)
-            elif soup.select_one('.bottom_paging_box > em').text == '1':
-                pass
-        except:
-            return 0
-
-        return int(pages)
 
     def aggregatePosts(self, gno: str, post_type: str, signal,count) -> None:
         try:
