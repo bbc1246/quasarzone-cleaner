@@ -248,7 +248,6 @@ class Cleaner:
                                     if item.get('user_id') == self.user_id:
                                         match_ids.append(item.get('id'))
                                 for coid in match_ids:
-
                                     payload = {'_token': self.token, '_method': 'put',  'writeId': number,'commentId' : coid ,'commentSort' : 'old' ,'requestUri' :f'{bbsurl}/views/'+number+'?'+str(firstpage) ,'page' : firstpage, 'content': '삭제'}
                                     updateurl = f'{gno}/comments/update'
                                     res = self.session.post(updateurl, payload,proxies=self.getProxy())
