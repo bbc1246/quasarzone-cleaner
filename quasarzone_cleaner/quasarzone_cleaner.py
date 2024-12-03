@@ -1,341 +1,354 @@
-import time
-
-from .check_proxies import ProxyCheckWindow
-from .get_proxies import ProxyInputWindow
-from .cleaner_thread import CleanerThread
-from ..quasarzone_cleaner import Cleaner
-from .utils import resource_path
-from PyQt5 import QtWidgets
-from PyQt5 import QtCore
-from PyQt5 import QtGui
-from PyQt5 import uic
 import json
-import sys
 import os
-from selenium import webdriver
-from selenium.webdriver.common.by import By
-from selenium.webdriver.support.ui import WebDriverWait
-from selenium.webdriver.support import expected_conditions as EC
-from selenium.webdriver.chrome.options import Options
 
-main_form = uic.loadUiType(resource_path('./resources/ui/ui_main_window.ui'))[0]
-about_dialog_form = uic.loadUiType(resource_path('./resources/ui/ui_about_dialog.ui'))[0]
-logo_ico = resource_path('./resources/icon/logo_icon.ico')
-logo_img = resource_path('./resources/img/logo_wide.png')
+from requests.exceptions import ConnectTimeout
+from requests.exceptions import ProxyError
+from twocaptcha import TwoCaptcha
+from bs4 import BeautifulSoup
+from typing import Union
+import requests
+import urllib.parse
+import urllib3
+import time
+import re
 
-class MainWindow(QtWidgets.QMainWindow, main_form):
-    p_type_dict = { 'p': 'posting', 'c': 'comment' }
-    captcha_signal = QtCore.pyqtSignal(bool)
+import quasarzone_cleaner.quasarzone_cleaner
+
+MAX_DELAY = 0.9
+
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
+class Cleaner:
+    user_agent = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/87.0.4280.66 Safari/537.36'
+    login_headers = {
+        "X-Requested-With": "XMLHttpRequest",
+        "Referer": "https://www.quasarzone.com/",
+        'User-Agent': user_agent
+    }
+
+    delete_headers = {
+        'Accept': 'application/json, text/javascript, */*; q=0.01',
+        'Accept-Encoding': 'gzip, deflate, br',
+        'Accept-Language': 'ko-KR,ko;q=0.9',
+        'Connection': 'keep-alive',
+        'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
+        'Host': 'q.com',
+        'Origin': 'https://quasarzone.com',
+        'Referer': '',
+        'Sec-Fetch-Dest': 'empty',
+        'Sec-Fetch-Mode': 'cors',
+        'Sec-Fetch-Site': 'same-origin',
+        'Sec-Fetch-User': '?1',
+        'Upgrade-Insecure-Requests': '1',
+        'X-Requested-With': 'XMLHttpRequest',
+        'User-Agent': user_agent
+    }
+
+
     def __init__(self):
-        super().__init__()
-        self.setupUi(self)
-        self.setWindowIcon(QtGui.QIcon(logo_ico))
-        self.cookie = None
-        self.nick =''
-        self.id = ''
-        self.pw = ''
-        self.p_type = '' # 'posting' | 'comment'
-        self.twocaptcha_key = ''
-        self.g_list = []
+        self.session = requests.Session()
+        self.data_id = ''
+        self.token =''
+        self.session.verify = False
+        self.session.headers.update({'User-Agent': self.user_agent})
+        self.post_list = []
         self.proxy_list = []
-        self.write_count = 0
-        self.comment_count =0
-        self.writecnt = 0
-        self.commentcnt =0
-        self.about_dialog : AboutDialog
+        self.twocaptcha_key = ''
+        self.solver : TwoCaptcha
+        self.delay = MAX_DELAY
+        self.nick =''
 
-        self.progress_cur = 0
-        self.progress_max = 0
+    def updateDelay(self):
+        self.delay = round(MAX_DELAY / (len(self.proxy_list) or 1), 1)
 
-        self.cleaner_thread = CleanerThread(self.captcha_signal)
-        self.cleaner = Cleaner()
-        self.cleaner_thread.setCleaner(self.cleaner)
+    def _handleProxyError(func):
+        def wrapper(self, *args):
+            result = None
+            while True:
+                try:
+                    result = func(self, *args)
+                except (ProxyError, ConnectTimeout):
+                    self.proxy_list.pop()
+                    self.updateDelay()
+                else:
+                    return result
 
-        self.cleaner_thread.event_signal.connect(self.deleteEvent)
+        return wrapper
 
-        # self.input_pw.returnPressed.connect(self.login)
-        self.btn_login.clicked.connect(self.login)
+    def serializeForm(self, input_elements):
+        form = {}
+        for element in input_elements:
+            form[element['name']] = element['value']
+        return form
 
-        # self.btn_captcha_key.clicked.connect(self.set2CaptchaKey)
+    def getUserId(self) -> str:
+        return self.user_id
 
-        self.btn_get_posting.clicked.connect(lambda: self.getGallList('p'))
-        self.btn_get_comment.clicked.connect(lambda: self.getGallList('c'))
+    def setUserId(self, user_id: str) -> None:
+        self.user_id = user_id
 
-        self.btn_start.clicked.connect(self.delete)
+    def setProxyList(self, proxy_list: list) -> None:
+        self.proxy_list = proxy_list
+        self.updateDelay()
 
-        self.action_add_proxy.triggered.connect(self.openProxyInputDialog)
-        self.action_get_proxy.triggered.connect(self.getProxyList)
-        self.action_about.triggered.connect(self.openAboutDialog)
+    def set2CaptchaKey(self, key) -> bool:
+        twocaptcha_url = f'https://2captcha.com/in.php?key={key}'
 
-        self.checkbox_proxy.setEnabled(False)
-        self.group_box_gall.setEnabled(False)
+        res = requests.get(twocaptcha_url)
 
-        # QCheckBox 위젯 가져오기
-        checkbox = self.findChild(QtWidgets.QCheckBox, "checkbox_gall_all")
-        # 체크 상태로 설정
-        checkbox.setChecked(True)
-        # 비활성화 설정
-        # checkbox.setEnabled(False)
+        if res.text in ('ERROR_KEY_DOES_NOT_EXIST', 'ERROR_WRONG_USER_KEY'):
+            return False
+        
+        self.twocaptcha_key = key
 
-    def openAboutDialog(self):
-        self.about_dialog = AboutDialog()
-        self.about_dialog.show()
+        self.solver = TwoCaptcha(key)
+        
+        return True
 
-    def getProxyList(self):
+    def getCookies(self) -> dict:
+        return self.session.cookies.get_dict()
+
+
+    def getUserInfo(self,cookies) -> dict:
+        self.session.headers.update(self.login_headers)
+
+        for cookie in cookies:
+            # Selenium 쿠키에서 필요한 정보만 추출하여 requests 쿠키 형식으로 변환
+            self.session.cookies.set(cookie['name'], cookie['value'], domain=cookie['domain'])
+
+        res = self.session.get('https://quasarzone.com')
+
+        soup = BeautifulSoup(res.text, 'html.parser')
+        self.token = soup.find("meta", {'name': 'csrf-token'})['content']
+        url_match = re.search(r"if\(type === 'post'\)\s*{\s*openWindow\('([^']+)'", res.text)
+        self.data_id =  url_match.group(1) if url_match else ''
+        match = re.search(r'/board/([A-Za-z0-9.-]+)/', self.data_id)
+        self.user_id =  match.group(1) if match else ''
+
+        nickname = soup.select_one('span[data-nick]')['data-nick']
+
+        article_num =  re.search(r'var postCount = "(\d+)"', res.text).group(1)
+
+        comment_num =  re.search(r'var commentCount = "(\d+)"', res.text).group(1)
+
+        remove_bracket = lambda x: x[1:-1]
+
+        return {
+            'nickname': nickname,
+            'article_num': article_num,
+            'comment_num': comment_num,
+        }
+
+
+    def aggregatePosts(self, gno: str, post_type: str, signal,count) -> None:
         try:
-            name = QtWidgets.QFileDialog.getOpenFileName(self, '프록시 파일 열기', './', 'JSON files (*.json)')[0]
-            with open(name, 'r') as file:
-                data = json.loads(file.read())
-                if data['title'] != 'quasarzone_cleaner_proxy_list':
-                    raise Exception
-                self.proxy_list = data['data']
-                self.checkbox_proxy.setText('프록시 사용 - ' + os.path.basename(name))
-                self.checkbox_proxy.setEnabled(True)
-        except:
-            self.proxy_list = []
-            QtWidgets.QMessageBox.warning(self, '파일 열기 실패', '올바른 파일이 아닙니다.')
-
-    @QtCore.pyqtSlot(dict)
-    def deleteEvent(self, event):
-        if event['type'] == 'pages':
-            self.log('글 목록 가져오는 중...')
-            self.progress_cur = 0
-            self.progress_max = event['data']
-            self.progress_bar.setValue(0)
-
-        elif event['type'] == 'posts':
-            self.log(f'글 개수는 {event["data"]}개 입니다')
-            self.log('글 삭제하는 중...')
-            self.progress_cur = 0
-            self.progress_max = event['data']
-            self.progress_bar.setValue(0)
-
-        elif event['type'] == 'logs':
-            self.log(event['data'])
+            self.session.headers.update({'User-Agent': self.user_agent})
+            proxies = self.getProxy()
+            match = re.search(r'/bbs/([^/]+)', gno)
+            bbsurl = match.group(0)
+            boardname = match.group(0)[5:]
 
 
-        elif event['type'] in ('page_update', 'post_update'):
-            self.progress_max = event['max']
-            self.progress_cur +=event['cur']
-            self.progress_bar.setValue(int((self.progress_cur / self.progress_max) * 100))
-
-            # if 'captcha_solved' in event['data'].keys() and event['data']['captcha_solved']:
-            #     self.log(f"캡차가 자동 해제됨")
-
-            # if event['type'] == 'page_update':
-            #     self.log(f"{event['data']['index'] + 1}번째 페이지 로딩...")
-            # else:
-            #     self.log(f"{event['data']['del_no']}번 글 삭제")
-            #
-            # self.log(f"프록시는 {event['data']['proxy'] or 'X'}, 딜레이는 {event['data']['delay']}sec")
-
-        elif event['type'] == 'ipblocked':
-            self.log('IP 차단 감지')
-            QtWidgets.QMessageBox.warning(self, '차단 안내', 'IP가 차단되었습니다.')
-
-        elif event['type'] == 'captcha':
-            self.log('캡차 감지')
-            if not self.twocaptcha_key:
-                QtWidgets.QMessageBox.information(self, '캡차 안내', '캡차가 감지되었습니다.\n갤로그에 접속해 캡차를 해제한 후 확인을 눌러주세요.')
-            self.captcha_signal.emit(True)
-
-        elif event['type'] == 'complete':
-            self.log('삭제 완료')
-            QtWidgets.QMessageBox.information(self, '완료', '삭제 작업이 완료되었습니다.')
-            self.progress_cur = 0
-            self.progress_max = 0
-            self.label_current_mode.setText('현재 모드: Unknown')
-            self.progress_bar.setValue(0)
-            self.group_box_gall.setEnabled(True)
-            self.btn_start.setEnabled(True)
-            self.cleaner_thread.quit()
-            self.p_type = ''
-            # self.g_list = []
-            # self.combo_box_gall.clear()
-            # self.updateUserInfo()
-
-    def log(self, text):
-        self.box_log.append(text)
-        self.statusBar().showMessage(text, 1500)
-
-    def setCursorWait(self):
-        QtGui.QGuiApplication.setOverrideCursor(QtCore.Qt.WaitCursor)
-
-    def restoreCursor(self):
-        QtGui.QGuiApplication.restoreOverrideCursor()
-
-    def login(self):
-        self.setCursorWait()
-
-
-        try:
-
-            options = Options()
-            options.add_argument("--disable-blink-features=AutomationControlled")  # 자동화 감지 비활성화
-            options.add_experimental_option("excludeSwitches", ["enable-automation"])  # 자동화 메시지 제거
-            options.add_experimental_option("useAutomationExtension", False)  # 자동화 확장 비활성화
-
-            driver = webdriver.Chrome(options=options)
-            driver.get('https://quasarzone.com/login?nextUrl=https://quasarzone.com/')
-            self.log('로그인 중...')
-
-            element = WebDriverWait(driver, 180).until(
-                EC.presence_of_element_located((By.CLASS_NAME, "user-sub-info-wrapper"))  # 대시보드에 있는 특정 요소
-            )
-            # 로그인 후 쿠키 가져오기
-            self.cookie = driver.get_cookies()
-            nick_element = driver.find_element(By.CSS_SELECTOR, 'span[data-nick]')  # data-nick 속성이 있는 span 태그 선택
-            # data-nick 속성의 value 가져오기
-            nick_value = nick_element.get_attribute("data-nick")
-            self.nick = nick_value
-
-        except:
-            self.log('로그인 실패')
-        finally:
-            driver.quit()
-
-
-        if self.nick != '':
-            self.group_box_login.setEnabled(False)
-            self.updateUserInfo(self.cookie)
-            self.getBoaard()
-            self.group_box_gall.setEnabled(True)
-            self.restoreCursor()
-            self.log('로그인 성공')
-            QtWidgets.QMessageBox.information(self, '로그인 안내', '로그인되었습니다')
-        else:
-            self.restoreCursor()
-            QtWidgets.QMessageBox.warning(self, '로그인 안내', '로그인에 실패했습니다.')
+        except Exception as e:
+            signal.emit({'type': 'logs', 'data': str(e)})
             return
 
+        try:
+            result = self.session.get(gno, proxies=proxies)
+            self.nick = BeautifulSoup(result.text, 'html.parser').find('p', {'class': 'nick'}).text[:-2]
+        except Exception as e:
+            signal.emit({'type': 'logs', 'data': gno + str(e)})
+            return
+
+        if post_type == 'posting':
+            nextpage = 1
+            while True:
+                search = f'{gno}?_method=post&type=&page={nextpage}&kind=nick&keyword={urllib.parse.quote_plus(self.nick)}'
+                pages = self.session.get(search,proxies=proxies)
+                if pages.text.find(bbsurl) == -1:
+                    time.sleep(self.delay*3)
+                    continue
+                soup = BeautifulSoup(pages.text,'html.parser')
+
+                dabate_div = soup.find('div', class_=['dabate-type-list', 'market-type-list market-info-type-list relative'])
+                if dabate_div == None:
+                    links = [p.find_parent('a') for p in soup.find_all('p', class_=['title subject-link', 'tit subject-link']) if p.find_parent('a')]
+                else:
+                    links = dabate_div.find_all('a', class_='subject-link')
+                if len(links) == 0:
+                    break
+
+                for link in links:
+                    writeno = re.search(r'/views/(\d+)', link['href'])
+                    if writeno:
+                        number = writeno.group(1)  # 숫자 부분만 추출
+                        payload = {'_token': self.token, '_method': 'put', 'type': 'update', 'writeId': number,
+                                   'html': 'html1',
+                                   'subject': '삭제', 'content': '삭제'}
+                        updateurl = f'{gno}/update/{number}'
+                        res = self.session.post(updateurl, payload,proxies=proxies)
+                        if res.status_code == 200:
+                            signal.emit( {'type': 'page_update', 'max': count , 'cur': 1 })
+                        time.sleep(self.delay)
+
+                nextpage+=1
 
 
-    def updateUserInfo(self,cookie):
+        elif post_type == 'comment':
+            nextpage = 1
+            while True:
+                search = f'{gno}?page={nextpage}'
+                pages = self.session.get(search, proxies=self.getProxy())
+                if pages.text.find(bbsurl) == -1:
+                    time.sleep(self.delay * 3)
+                    continue
 
-        result = self.cleaner.getUserInfo(cookie)
-        self.label_nickname.setText('닉네임: ' + result['nickname'])
-        self.label_article_num.setText('글 개수: ' + result['article_num'])
-        self.writecnt = int(result['article_num'])
-        self.label_comment_num.setText('댓글 개수: ' + result['comment_num'])
-        self.commentcnt = int( result['comment_num'])
+                signal.emit({'type': 'logs', 'data': search})
 
-    def getBoaard(self):
-        self.combo_box_gall.clear()
+                soup = BeautifulSoup(pages.text, 'html.parser')
 
-        self.g_list = []
-        self.setCursorWait()
-        self.log('게시판 목록 가져오는 중...')
+                dabate_div = soup.find('div', class_=['dabate-type-list', 'market-type-list market-info-type-list relative'])
 
-        gall_list = self.cleaner.getBoardList(self.p_type)
-        idx = 0
+                if dabate_div:
+                    # 'dabate_div' 내에서 'subject-link' 클래스를 가진 모든 <a> 태그 찾기
+                    links = dabate_div.find_all('a', class_='subject-link')
+                else:
+                    # 'dabate_div'이 없을 경우 'title subject-link' 또는 'tit subject-link'를 가진 모든 <p> 태그에서 부모 <a> 태그 찾기
+                    links = [
+                        p.find_parent('a') for p in soup.find_all('p', class_=['title subject-link', 'tit subject-link']) if p.find_parent('a')
+                    ]
 
-        for tuple in gall_list:
-            if tuple[0].find('https://quasarplay.com') == -1 and tuple[0].find('qb_jijang') == -1:
-                burl = 'https://quasarzone.com' + tuple[0]
-                self.g_list.append(burl)
-                self.combo_box_gall.addItem(f'{idx + 1}. {tuple[1]}')
-                idx += 1
-        self.restoreCursor()
-        self.log('게시판 목록 가져옴')
+                # 결과가 없으면 빈 리스트로 초기화
+                links = links or []
+                lensubjects = len(links)
+                if links == None or lensubjects == 0:
+                    break
+                signal.emit({'type': 'page_update', 'max': count, 'cur':lensubjects})
 
-    def getGallList(self, post_type):
+                links = []
+                for span in soup.find_all("span", class_="ctn-count my-active"):
+                    # 시블링에서 a 태그의 href 속성 값 가져오기
+                    sibling_link = span.find_previous("a")
+                    if sibling_link:
+                        links.append(sibling_link.get("href"))
 
-        self.setCursorWait()
-        self.p_type = self.p_type_dict[post_type]
+                for link in links:
+                    writeno = re.search(r'/views/(\d+)', link)
+                    if writeno:
+                        firstpage = 1
+                        number = writeno.group(1)  # 숫자 부분만 추출
+                        commenturl = f'https://quasarzone.com/comments/{boardname}/getComment?boardName={boardname}&writeId={number}&page={firstpage}'
+                        res = self.session.get(commenturl,proxies=self.getProxy())
+                        value = json.loads(res.text)
 
+                        while True:
+                            match_ids = []
+                            if len(value['comm_list']) > 0:
+                                for item in value['comm_list']['comments']['data']:
+                                    if item.get('user_id') == self.user_id:
+                                        match_ids.append(item.get('id'))
+                                for coid in match_ids:
 
-        if self.checkbox_gall_all.isChecked() and  self.p_type == 'comment':
-            for boardurl in self.g_list:
-                count = self.cleaner.getBoardCount(boardurl)
-                self.write_count+= count['writecount']
-                self.comment_count+= count['commentcount']
-                time.sleep(0.1)
+                                    payload = {'_token': self.token, '_method': 'put',  'writeId': number,'commentId' : coid ,'commentSort' : 'old' ,'requestUri' :f'{bbsurl}/views/'+number+'?'+str(firstpage) ,'page' : firstpage, 'content': '삭제'}
+                                    updateurl = f'{gno}/comments/update'
+                                    res = self.session.post(updateurl, payload,proxies=self.getProxy())
+                                    time.sleep(self.delay)
+                            elif len(value['comm_list']) == 0:
+                                break
+                            if value['comm_list']['comments']['next_page_url'] == None:
+                                break
+                            firstpage+=1
+                            commenturl = f'https://quasarzone.com/comments/{boardname}/getComment?boardName={boardname}&writeId={number}&page={firstpage}'
+                            res = self.session.get(commenturl, proxies=self.getProxy())
+                            value = json.loads(res.text)
+
+                nextpage+=1
+
+    def getBoardCount(self, url)  -> Union[dict, str]:
+        self.session.headers.update({'User-Agent': self.user_agent})
+        res= self.session.get(url,proxies=self.getProxy())
+        soup = BeautifulSoup(res.text, 'html.parser')
+
+        script_tag = soup.find('script', text=re.compile(r'var\s+board\s*=\s*{'))
+        if script_tag:
+            # JavaScript 코드에서 JSON 부분 추출
+            match = re.search(r'var\s+board\s*=\s*({.*?});', script_tag.string, re.DOTALL)
+            if match:
+                board_json_str = match.group(1)
+
+                # JSON 문자열 파싱
+                board_data = json.loads(board_json_str)
+                wirtecount = board_data['count_write']
+                commentcount = board_data['count_comment']
+                boardname = board_data['subject']
+                if wirtecount < 0:
+                    wirtecount = 0
+                if commentcount <0:
+                    commentcount =0
+                return {'writecount' : wirtecount , 'commentcount':commentcount}
+                # 결과 출력
+                # print(json.dumps(board_data, indent=4, ensure_ascii=False))
+            else:
+                print ("board JSON을 찾을 수 없습니다.")
+                return {'writecount' : 0 , 'commentcount':0}
         else:
-            url = self.g_list[self.combo_box_gall.currentIndex()]
-            count = self.cleaner.getBoardCount(url)
-            self.write_count += count['writecount']
-            self.comment_count += count['commentcount']
+            print ("<script> 태그에서 'var board'를 찾을 수 없습니다.")
+            return {'writecount' : 0 , 'commentcount':0}
+        return {'writecount' : 0 , 'commentcount':0}
 
-        if self.p_type ==  'comment':
-            self.write_count = self.write_count
-        elif self.p_type == 'posting':
-            self.write_count = self.writecnt
+    @_handleProxyError
+    def getBoardList(self, post_type: str) -> Union[dict, str]:
 
-        self.log((post_type == 'p' and '글' or '댓글') + ' 모드 설정' )
-        self.label_current_mode.setText('현재 모드: ' + (post_type == 'p' and '글' or '댓글'))
-        self.restoreCursor()
+        if self.data_id != '':
+            self.session.headers.update({'User-Agent': self.user_agent})
+            res= self.session.get('https://quasarzone.com',proxies=self.getProxy())
+            soup = BeautifulSoup(res.text, 'html.parser')
+            # boardlist = [a["href"] for a in soup.select("div.menu a")]
+            boardlist = [(a["href"], a.text.strip()) for a in soup.select("div.menu a")]
 
-    def delete(self):
-        del_all = self.checkbox_gall_all.isChecked()
-        del_list = []
+            return boardlist
 
-        if not self.p_type:
-            return QtWidgets.QMessageBox.warning(self, '안내', '게시글 또는 댓글 설정을 하십시오.')
-        
-        if not del_all:
-            idx = self.combo_box_gall.currentIndex()
-            del_list = [self.g_list[idx]]
-        else:
-            del_list = self.g_list
+    def getQuicklist(self, post_type: str) -> Union[dict, str]:
+            self.session.headers.update({'User-Agent': self.user_agent})
+            res= self.session.get(self.data_id,proxies=self.getProxy())
+            soup = BeautifulSoup(res.text, 'html.parser')
+            links = soup.find_all("a", href=True)
 
-        self.cleaner_thread.setDelInfo(del_list, self.p_type, del_all,self.write_count)
-        
-        if self.checkbox_proxy.isChecked():
-            self.cleaner.setProxyList(self.proxy_list)
+            # 정규 표현식을 이용해 각 링크의 인수 추출
+            gall_list_elements = []
+            for link in links:
+                href = link["href"]
+                match = re.search(r"moveBoardPage\('([^']*)', '([^']*)', '([^']*)', '([^']*)'\)", href)
+                if match:
+                    args = match.groups()
+                    gall_list_elements.append(args)
 
-        self.group_box_gall.setEnabled(False)
-        self.btn_start.setEnabled(False)
-        self.checkbox_proxy.setEnabled(False)
-        self.cleaner_thread.start()
+            # 결과 출력
+            for i, args in enumerate(gall_list_elements, 1):
+                print(f"Link {i} arguments:", args)
+            # 1.게시판명 2.게시글번호 3. 4.댓글번호
+            #https://quasarzone.com/bbs/qb_free/views/1
 
-    def openProxyInputDialog(self):
-        self.proxy_input_dialog = ProxyInputWindow()
-        self.proxy_input_dialog.proxy_list_signal.connect(self.openProxyCheckDialog)
-        self.proxy_input_dialog.show()
-        
-    @QtCore.pyqtSlot(list)
-    def openProxyCheckDialog(self, proxy_list):
-        self.proxy_check_dialog = ProxyCheckWindow(proxy_list)
-        self.proxy_check_dialog.available_proxy_list_signal.connect(self.setAvailableProxyList)
-        self.proxy_check_dialog.show()
+            gall_list = {}
+            for gall_list_element in gall_list_elements:
+                gno = gall_list_element[1]
+                gname = gall_list_element[0]
+                gcnt = gall_list_element[2]
+                gcono = gall_list_element[3]
+                gall_list[gno] =(gno,gname,gcnt,gcono)
+            return gall_list
 
-    @QtCore.pyqtSlot(list)
-    def setAvailableProxyList(self, available_list):
-        self.proxy_list = available_list
-        self.checkbox_proxy.setText('프록시 사용 - 확인된 리스트')
-        self.checkbox_proxy.setEnabled(True)
+    def getProxy(self) -> dict:
+        if self.proxy_list:
+            proxy = self.proxy_list.pop(0)
+            self.proxy_list.append(proxy)
+            return {
+                'http': proxy,
+                'https': proxy
+            }
 
-    def set2CaptchaKey(self):
-        key = self.input_captcha_key.text()
-
-        res = self.cleaner.set2CaptchaKey(key)
-
-        if not res:
-            return QtWidgets.QMessageBox.warning(self, '안내', '유효하지 않은 API 키입니다.')
-        
-        self.group_box_captcha.setEnabled(False)
-
-        QtWidgets.QMessageBox.information(self, '안내', 'API 키가 등록되었습니다.')
-
-class AboutDialog(QtWidgets.QDialog, about_dialog_form):
-
-    def __init__(self):
-        super().__init__()
-        self.setupUi(self)
-        self.setWindowIcon(QtGui.QIcon(logo_ico))
-
-        pixmap = QtGui.QPixmap()
-        pixmap.load(logo_img)
-        pixmap = pixmap.scaledToWidth(600)
-
-        self.logo_img.setPixmap(pixmap)
-
-        self.label_info.setOpenExternalLinks(True)
-
-
-
-def execute():
-    app = QtWidgets.QApplication(sys.argv)
-    main_window = MainWindow()
-    main_window.show()
-    app.exec_()
+        return {}
+    
+    def solveCaptcha(self, page_url) -> str:
+        result = self.solver.recaptcha(sitekey=self.dcinside_site_key, url=page_url)
+        return result['code']
