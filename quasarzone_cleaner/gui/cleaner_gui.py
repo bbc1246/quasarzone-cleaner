@@ -16,6 +16,7 @@ from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
+from selenium.webdriver.chrome.options import Options
 
 main_form = uic.loadUiType(resource_path('./resources/ui/ui_main_window.ui'))[0]
 about_dialog_form = uic.loadUiType(resource_path('./resources/ui/ui_about_dialog.ui'))[0]
@@ -166,8 +167,15 @@ class MainWindow(QtWidgets.QMainWindow, main_form):
     def login(self):
         self.setCursorWait()
 
+
         try:
-            driver = webdriver.Chrome()
+
+            options = Options()
+            options.add_argument("--disable-blink-features=AutomationControlled")  # 자동화 감지 비활성화
+            options.add_experimental_option("excludeSwitches", ["enable-automation"])  # 자동화 메시지 제거
+            options.add_experimental_option("useAutomationExtension", False)  # 자동화 확장 비활성화
+
+            driver = webdriver.Chrome(options=options)
             driver.get('https://quasarzone.com/login?nextUrl=https://quasarzone.com/')
             self.log('로그인 중...')
 
