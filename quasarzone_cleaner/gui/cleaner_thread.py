@@ -1,6 +1,6 @@
 import time
 
-from ..dcinside_cleaner import Cleaner
+from ..quasarzone_cleaner import Cleaner
 from PyQt5 import QtCore
 
 

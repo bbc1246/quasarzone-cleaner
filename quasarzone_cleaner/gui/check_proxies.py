@@ -29,7 +29,7 @@ class ProxyCheckWindow(QtWidgets.QDialog, proxies_check_form):
         self.checkbox_list = []
 
         self.proxy_checker = ProxyChecker()
-        self.proxy_checker.setCheckURL('https://www.dcinside.com/')
+        self.proxy_checker.setCheckURL('https://www.quasarzone.com/')
 
         self.btn_save_proxies.setEnabled(False)
         self.btn_save_proxies.clicked.connect(self.exportProxyList)
@@ -106,13 +106,13 @@ class ProxyCheckWindow(QtWidgets.QDialog, proxies_check_form):
     def exportProxyList(self):
         time = str(datetime.today())
         export_content = {
-            "title": "dcinside_cleaner_proxy_list",
+            "title": "quasarzone_cleaner_proxy_list",
             "create_date": time,
             "data": self.available_list
         }
 
         export_content_json = json.dumps(export_content)
-        name = QtWidgets.QFileDialog.getSaveFileName(self, 'Save File', f'./dcinside_cleaner_proxy_list.json', 'JSON files (*.json)')
+        name = QtWidgets.QFileDialog.getSaveFileName(self, 'Save File', f'./quasarzone_cleaner_proxy_list.json', 'JSON files (*.json)')
 
         try:
             with open(name[0], 'w') as file:
@@ -162,7 +162,7 @@ class ProxyThread(QtCore.QThread):
         super().__init__()
         self.proxy_list = proxy_list
         self.proxy_checker = ProxyChecker()
-        self.proxy_checker.setCheckURL('https://www.dcinside.com/')
+        self.proxy_checker.setCheckURL('https://www.quasarzone.com/')
         self.working = False
 
     def run(self):

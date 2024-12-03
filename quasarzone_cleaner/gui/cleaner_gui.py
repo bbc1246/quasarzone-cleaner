@@ -3,7 +3,7 @@ import time
 from .check_proxies import ProxyCheckWindow
 from .get_proxies import ProxyInputWindow
 from .cleaner_thread import CleanerThread
-from ..dcinside_cleaner import Cleaner
+from ..quasarzone_cleaner import Cleaner
 from .utils import resource_path
 from PyQt5 import QtWidgets
 from PyQt5 import QtCore
@@ -85,7 +85,7 @@ class MainWindow(QtWidgets.QMainWindow, main_form):
             name = QtWidgets.QFileDialog.getOpenFileName(self, '프록시 파일 열기', './', 'JSON files (*.json)')[0]
             with open(name, 'r') as file:
                 data = json.loads(file.read())
-                if data['title'] != 'dcinside_cleaner_proxy_list':
+                if data['title'] != 'quasarzone_cleaner_proxy_list':
                     raise Exception
                 self.proxy_list = data['data']
                 self.checkbox_proxy.setText('프록시 사용 - ' + os.path.basename(name))
@@ -222,7 +222,7 @@ class MainWindow(QtWidgets.QMainWindow, main_form):
         idx = 0
 
         for tuple in gall_list:
-            if tuple[0].find('https://quasarplay.com') == -1:
+            if tuple[0].find('https://quasarplay.com') == -1 and tuple[0].find('qb_jijang') == -1:
                 burl = 'https://quasarzone.com' + tuple[0]
                 self.g_list.append(burl)
                 self.combo_box_gall.addItem(f'{idx + 1}. {tuple[1]}')
