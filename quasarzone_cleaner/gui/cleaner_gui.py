@@ -38,7 +38,7 @@ class MainWindow(QtWidgets.QMainWindow, main_form):
         self.twocaptcha_key = ''
         self.g_list = []
         self.proxy_list = []
-        self.write_count = 0
+        self.workcount = 0
         self.comment_count =0
         self.writecnt = 0
         self.commentcnt =0
@@ -46,6 +46,8 @@ class MainWindow(QtWidgets.QMainWindow, main_form):
 
         self.progress_cur = 0
         self.progress_max = 0
+
+        self.progresswork = 0
 
         self.cleaner_thread = CleanerThread(self.captcha_signal)
         self.cleaner = Cleaner()
@@ -97,20 +99,8 @@ class MainWindow(QtWidgets.QMainWindow, main_form):
 
     @QtCore.pyqtSlot(dict)
     def deleteEvent(self, event):
-        if event['type'] == 'pages':
-            self.log('글 목록 가져오는 중...')
-            self.progress_cur = 0
-            self.progress_max = event['data']
-            self.progress_bar.setValue(0)
 
-        elif event['type'] == 'posts':
-            self.log(f'글 개수는 {event["data"]}개 입니다')
-            self.log('글 삭제하는 중...')
-            self.progress_cur = 0
-            self.progress_max = event['data']
-            self.progress_bar.setValue(0)
-
-        elif event['type'] == 'logs':
+        if event['type'] == 'logs':
             self.log(event['data'])
 
 
@@ -118,15 +108,7 @@ class MainWindow(QtWidgets.QMainWindow, main_form):
             self.progress_max = event['max']
             self.progress_cur +=event['cur']
             self.progress_bar.setValue(int((self.progress_cur / self.progress_max) * 100))
-
-            # if 'captcha_solved' in event['data'].keys() and event['data']['captcha_solved']:
-            #     self.log(f"캡차가 자동 해제됨")
-
-            # if event['type'] == 'page_update':
-            #     self.log(f"{event['data']['index'] + 1}번째 페이지 로딩...")
-            # else:
-            #     self.log(f"{event['data']['del_no']}번 글 삭제")
-            #
+            self.progresswork+=1
             # self.log(f"프록시는 {event['data']['proxy'] or 'X'}, 딜레이는 {event['data']['delay']}sec")
 
         elif event['type'] == 'ipblocked':
@@ -141,7 +123,12 @@ class MainWindow(QtWidgets.QMainWindow, main_form):
 
         elif event['type'] == 'complete':
             self.log('삭제 완료')
-            QtWidgets.QMessageBox.information(self, '완료', '삭제 작업이 완료되었습니다.')
+            if self.p_type == 'posting':
+                word = '게시글'
+            else:
+                word = '댓글'
+            message = f"{word}  {self.workcount}개 중 {self.progresswork} 개 삭제 완료"
+            QtWidgets.QMessageBox.information(self, '완료', message)
             self.progress_cur = 0
             self.progress_max = 0
             self.label_current_mode.setText('현재 모드: Unknown')
@@ -150,6 +137,7 @@ class MainWindow(QtWidgets.QMainWindow, main_form):
             self.btn_start.setEnabled(True)
             self.cleaner_thread.quit()
             self.p_type = ''
+            self.progresswork =0
             # self.g_list = []
             # self.combo_box_gall.clear()
             # self.updateUserInfo()
@@ -166,10 +154,7 @@ class MainWindow(QtWidgets.QMainWindow, main_form):
 
     def login(self):
         self.setCursorWait()
-
-
         try:
-
             options = Options()
             options.add_argument("--disable-blink-features=AutomationControlled")  # 자동화 감지 비활성화
             options.add_experimental_option("excludeSwitches", ["enable-automation"])  # 자동화 메시지 제거
@@ -179,7 +164,7 @@ class MainWindow(QtWidgets.QMainWindow, main_form):
             driver.get('https://quasarzone.com/login?nextUrl=https://quasarzone.com/')
             self.log('로그인 중...')
 
-            element = WebDriverWait(driver, 100).until(
+            element = WebDriverWait(driver, 180).until(
                 EC.presence_of_element_located((By.CLASS_NAME, "user-sub-info-wrapper"))  # 대시보드에 있는 특정 요소
             )
             # 로그인 후 쿠키 가져오기
@@ -188,27 +173,26 @@ class MainWindow(QtWidgets.QMainWindow, main_form):
             # data-nick 속성의 value 가져오기
             nick_value = nick_element.get_attribute("data-nick")
             self.nick = nick_value
-            print( self.cookie)
-        except:
-            self.restoreCursor()
-            QtWidgets.QMessageBox.warning(self, '로그인 안내', '로그인에 실패했습니다.')
 
+        except:
+            self.log('로그인 실패')
         finally:
             driver.quit()
 
-
         if self.nick != '':
-            self.log('로그인 성공')
-            QtWidgets.QMessageBox.information(self, '로그인 안내', '로그인되었습니다')
             self.group_box_login.setEnabled(False)
             self.updateUserInfo(self.cookie)
+            self.getBoaard()
+            self.group_box_gall.setEnabled(True)
+            self.restoreCursor()
+            self.log('로그인 성공')
+            QtWidgets.QMessageBox.information(self, '로그인 안내', '로그인되었습니다')
         else:
-            self.log('로그인 실패')
+            self.restoreCursor()
+            QtWidgets.QMessageBox.warning(self, '로그인 안내', '로그인에 실패했습니다.')
             return
 
-        self.getBoaard()
-        self.restoreCursor()
-        self.group_box_gall.setEnabled(True)
+
 
     def updateUserInfo(self,cookie):
 
@@ -230,38 +214,39 @@ class MainWindow(QtWidgets.QMainWindow, main_form):
         idx = 0
 
         for tuple in gall_list:
-            if tuple[0].find('https://quasarplay.com') == -1 and tuple[0].find('qb_jijang') == -1:
+            if tuple[0].find('https://quasarplay.com') == -1:
                 burl = 'https://quasarzone.com' + tuple[0]
                 self.g_list.append(burl)
                 self.combo_box_gall.addItem(f'{idx + 1}. {tuple[1]}')
                 idx += 1
         self.restoreCursor()
+        self.log('게시판 목록 가져옴')
 
     def getGallList(self, post_type):
 
         self.setCursorWait()
         self.p_type = self.p_type_dict[post_type]
 
-
-        if self.checkbox_gall_all.isChecked() and  self.p_type == 'comment':
-            for boardurl in self.g_list:
-                count = self.cleaner.getBoardCount(boardurl)
-                self.write_count+= count['writecount']
-                self.comment_count+= count['commentcount']
-                time.sleep(0.1)
-        else:
-            url = self.g_list[self.combo_box_gall.currentIndex()]
-            count = self.cleaner.getBoardCount(url)
-            self.write_count += count['writecount']
-            self.comment_count += count['commentcount']
+        # if self.checkbox_gall_all.isChecked() and  self.p_type == 'comment':
+        #     for boardurl in self.g_list:
+        #         count = self.cleaner.getBoardCount(boardurl)
+        #         self.write_count+= count['writecount']
+        #         self.comment_count+= count['commentcount']
+        #         time.sleep(0.1)
+        # else:
+        #     url = self.g_list[self.combo_box_gall.currentIndex()]
+        #     count = self.cleaner.getBoardCount(url)
+        #     self.write_count += count['writecount']
+        #     self.comment_count += count['commentcount']
 
         if self.p_type ==  'comment':
-            self.write_count = self.write_count
+            self.workcount = self.commentcnt
         elif self.p_type == 'posting':
-            self.write_count = self.writecnt
+            self.workcount = self.writecnt
 
         self.log((post_type == 'p' and '글' or '댓글') + ' 모드 설정' )
         self.label_current_mode.setText('현재 모드: ' + (post_type == 'p' and '글' or '댓글'))
+        self.progresswork = 0
         self.restoreCursor()
 
     def delete(self):
@@ -277,7 +262,7 @@ class MainWindow(QtWidgets.QMainWindow, main_form):
         else:
             del_list = self.g_list
 
-        self.cleaner_thread.setDelInfo(del_list, self.p_type, del_all,self.write_count)
+        self.cleaner_thread.setDelInfo(del_list, self.p_type, del_all, self.workcount)
         
         if self.checkbox_proxy.isChecked():
             self.cleaner.setProxyList(self.proxy_list)
@@ -306,14 +291,11 @@ class MainWindow(QtWidgets.QMainWindow, main_form):
 
     def set2CaptchaKey(self):
         key = self.input_captcha_key.text()
-
         res = self.cleaner.set2CaptchaKey(key)
 
         if not res:
             return QtWidgets.QMessageBox.warning(self, '안내', '유효하지 않은 API 키입니다.')
-        
         self.group_box_captcha.setEnabled(False)
-
         QtWidgets.QMessageBox.information(self, '안내', 'API 키가 등록되었습니다.')
 
 class AboutDialog(QtWidgets.QDialog, about_dialog_form):
