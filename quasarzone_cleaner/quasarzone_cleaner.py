@@ -223,7 +223,6 @@ class Cleaner:
                 lensubjects = len(links)
                 if links == None or lensubjects == 0:
                     break
-                signal.emit({'type': 'page_update', 'max': count, 'cur':lensubjects})
 
                 links = []
                 for span in soup.find_all("span", class_="ctn-count my-active"):
@@ -251,6 +250,7 @@ class Cleaner:
                                     payload = {'_token': self.token, '_method': 'put',  'writeId': number,'commentId' : coid ,'commentSort' : 'old' ,'requestUri' :f'{bbsurl}/views/'+number+'?'+str(firstpage) ,'page' : firstpage, 'content': '삭제'}
                                     updateurl = f'{gno}/comments/update'
                                     res = self.session.post(updateurl, payload,proxies=self.getProxy())
+                                    signal.emit({'type': 'page_update', 'max': count, 'cur': 1})
                                     time.sleep(self.delay)
                             elif len(value['comm_list']) == 0:
                                 break
@@ -285,8 +285,6 @@ class Cleaner:
                 if commentcount <0:
                     commentcount =0
                 return {'writecount' : wirtecount , 'commentcount':commentcount}
-                # 결과 출력
-                # print(json.dumps(board_data, indent=4, ensure_ascii=False))
             else:
                 print ("board JSON을 찾을 수 없습니다.")
                 return {'writecount' : 0 , 'commentcount':0}
