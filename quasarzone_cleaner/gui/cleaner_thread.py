@@ -39,14 +39,11 @@ class CleanerThread(QtCore.QThread):
                 pass
 
     def delete(self, gno,index,cnt):
-
         self.cleaner.aggregatePosts(gno, self.p_type,self.event_signal,self.count)
 
-
     def run(self):
-
+        self.cleaner.signal = self.event_signal
         for index, gno in enumerate(self.del_list):
             self.delete(gno,index,len(self.del_list))
             time.sleep(5)
-
         self.event_signal.emit({'type': 'complete'})
