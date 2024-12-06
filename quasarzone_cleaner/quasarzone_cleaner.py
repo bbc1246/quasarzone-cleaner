@@ -1,8 +1,11 @@
 import json
 import os
+import traceback
 
 from requests.exceptions import ConnectTimeout
 from requests.exceptions import ProxyError
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 from twocaptcha import TwoCaptcha
 from bs4 import BeautifulSoup
 from typing import Union
@@ -57,19 +60,40 @@ class Cleaner:
         self.solver : TwoCaptcha
         self.delay = MAX_DELAY
         self.nick =''
+        self.signal = None
+
+        retry_strategy = Retry(
+            total=5,  # 최대 재시도 횟수
+            backoff_factor=1,  # 지수 백오프: 1초, 2초, 4초, ...
+            status_forcelist=tuple( x for x in requests.status_codes._codes  if 400 <= x < 600 ),  # 재시도할 HTTP 상태 코드
+            allowed_methods=["HEAD", "GET", "OPTIONS" ,"POST"]  # 재시도할 HTTP 메서드
+        )
+
+        # HTTPAdapter에 Retry 설정 적용
+        adapter = HTTPAdapter(max_retries=retry_strategy)
+        self.session.mount("https://", adapter)
+        self.session.mount("http://", adapter)
 
     def updateDelay(self):
         self.delay = round(MAX_DELAY / (len(self.proxy_list) or 1), 1)
-
-    def _handleProxyError(func):
+    def handelRequesterror(func):
         def wrapper(self, *args):
             result = None
             while True:
                 try:
                     result = func(self, *args)
-                except (ProxyError, ConnectTimeout):
-                    self.proxy_list.pop()
-                    self.updateDelay()
+                except (ProxyError, ConnectTimeout) as e:
+                    tb = traceback.format_exc()  # 전체 traceback 문자열 가져오기
+                    self.signal.emit({'type': 'logs', 'data': str(e)})
+                    self.signal.emit({'type': 'logs', 'data': str(tb)})
+                    if self.proxy_list:
+                        self.proxy_list.pop()
+                        self.updateDelay()
+                except Exception as e:
+                    tb = traceback.format_exc()  # 전체 traceback 문자열 가져오기
+                    self.signal.emit({'type': 'logs', 'data': str(e)})
+                    self.signal.emit({'type': 'logs', 'data': str(tb)})
+                    return
                 else:
                     return result
 
@@ -108,7 +132,7 @@ class Cleaner:
     def getCookies(self) -> dict:
         return self.session.cookies.get_dict()
 
-
+    @handelRequesterror
     def getUserInfo(self,cookies) -> dict:
         self.session.headers.update(self.login_headers)
 
@@ -139,26 +163,18 @@ class Cleaner:
             'comment_num': comment_num,
         }
 
-
+    @handelRequesterror
     def aggregatePosts(self, gno: str, post_type: str, signal,count) -> None:
-        try:
-            self.session.headers.update({'User-Agent': self.user_agent})
-            proxies = self.getProxy()
-            match = re.search(r'/bbs/([^/]+)', gno)
-            bbsurl = match.group(0)
-            boardname = match.group(0)[5:]
 
+        self.session.headers.update({'User-Agent': self.user_agent})
+        proxies = self.getProxy()
+        match = re.search(r'/bbs/([^/]+)', gno)
+        bbsurl = match.group(0)
+        boardname = match.group(0)[5:]
 
-        except Exception as e:
-            signal.emit({'type': 'logs', 'data': str(e)})
-            return
+        result = self.session.get(gno, proxies=proxies)
+        self.nick = BeautifulSoup(result.text, 'html.parser').find('p', {'class': 'nick'}).text[:-2]
 
-        try:
-            result = self.session.get(gno, proxies=proxies)
-            self.nick = BeautifulSoup(result.text, 'html.parser').find('p', {'class': 'nick'}).text[:-2]
-        except Exception as e:
-            signal.emit({'type': 'logs', 'data': gno + str(e)})
-            return
 
         if post_type == 'posting':
             nextpage = 1
@@ -166,6 +182,7 @@ class Cleaner:
                 search = f'{gno}?_method=post&type=&page={nextpage}&kind=nick&keyword={urllib.parse.quote_plus(self.nick)}'
                 pages = self.session.get(search,proxies=proxies)
                 if pages.text.find(bbsurl) == -1:
+                    print(pages.text)
                     time.sleep(self.delay*3)
                     continue
                 soup = BeautifulSoup(pages.text,'html.parser')
@@ -188,7 +205,7 @@ class Cleaner:
                         updateurl = f'{gno}/update/{number}'
                         res = self.session.post(updateurl, payload,proxies=proxies)
                         if res.status_code == 200:
-                            signal.emit( {'type': 'page_update', 'max': count , 'cur': 1 })
+                            self.signal.emit( {'type': 'page_update', 'max': count , 'cur': 1 })
                         time.sleep(self.delay)
 
                 nextpage+=1
@@ -200,10 +217,12 @@ class Cleaner:
                 search = f'{gno}?page={nextpage}'
                 pages = self.session.get(search, proxies=self.getProxy())
                 if pages.text.find(bbsurl) == -1:
+                    print(str(pages.status_code)+'---------------------------------------------------------------------------\n')
+                    print(pages.text)
                     time.sleep(self.delay * 3)
                     continue
 
-                signal.emit({'type': 'logs', 'data': search})
+                self.signal.emit({'type': 'logs', 'data': search})
 
                 soup = BeautifulSoup(pages.text, 'html.parser')
 
@@ -237,8 +256,12 @@ class Cleaner:
                         firstpage = 1
                         number = writeno.group(1)  # 숫자 부분만 추출
                         commenturl = f'https://quasarzone.com/comments/{boardname}/getComment?boardName={boardname}&writeId={number}&page={firstpage}'
-                        res = self.session.get(commenturl,proxies=self.getProxy())
-                        value = json.loads(res.text)
+                        res = self.session.get(commenturl,proxies=proxies)
+                        try:
+                            value = json.loads(res.text)
+                        except Exception as e:
+                            self.signal.emit({'type': 'logs', 'data': str(e)})
+                            continue
 
                         while True:
                             match_ids = []
@@ -249,8 +272,8 @@ class Cleaner:
                                 for coid in match_ids:
                                     payload = {'_token': self.token, '_method': 'put',  'writeId': number,'commentId' : coid ,'commentSort' : 'old' ,'requestUri' :f'{bbsurl}/views/'+number+'?'+str(firstpage) ,'page' : firstpage, 'content': '삭제'}
                                     updateurl = f'{gno}/comments/update'
-                                    res = self.session.post(updateurl, payload,proxies=self.getProxy())
-                                    signal.emit({'type': 'page_update', 'max': count, 'cur': 1})
+                                    res = self.session.post(updateurl, payload,proxies=proxies)
+                                    self.signal.emit({'type': 'page_update', 'max': count, 'cur': 1})
                                     time.sleep(self.delay)
                             elif len(value['comm_list']) == 0:
                                 break
@@ -259,7 +282,11 @@ class Cleaner:
                             firstpage+=1
                             commenturl = f'https://quasarzone.com/comments/{boardname}/getComment?boardName={boardname}&writeId={number}&page={firstpage}'
                             res = self.session.get(commenturl, proxies=self.getProxy())
-                            value = json.loads(res.text)
+                            try:
+                                value = json.loads(res.text)
+                            except Exception as e:
+                                self.signal.emit({'type': 'logs', 'data': str(e)})
+                                break
 
                 nextpage+=1
 
@@ -293,7 +320,7 @@ class Cleaner:
             return {'writecount' : 0 , 'commentcount':0}
         return {'writecount' : 0 , 'commentcount':0}
 
-    @_handleProxyError
+    @handelRequesterror
     def getBoardList(self, post_type: str) -> Union[dict, str]:
 
         if self.data_id != '':
@@ -304,7 +331,7 @@ class Cleaner:
             boardlist = [(a["href"], a.text.strip()) for a in soup.select("div.menu a")]
 
             return boardlist
-
+    @handelRequesterror
     def getQuicklist(self, post_type: str) -> Union[dict, str]:
             self.session.headers.update({'User-Agent': self.user_agent})
             res= self.session.get(self.data_id,proxies=self.getProxy())
